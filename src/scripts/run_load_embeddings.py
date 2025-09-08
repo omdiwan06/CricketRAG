@@ -7,17 +7,16 @@ into the vector store for RAG operations.
 import logging
 import sys
 from pathlib import Path
-from typing import List
 
+from llama_index.core import SimpleDirectoryReader
 from llama_index.core.schema import Document
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from config import settings  # type: ignore
-from repositories import rag_repository  # type: ignore
+from src.config import settings
+from src.dependencies import get_rag_service
+from src.rag import RAGService
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -33,15 +32,9 @@ class DocumentLoader:
         """Initialize the document loader."""
         self.supported_extensions = {
             ".pdf",
-            ".txt",
-            ".md",
-            ".docx",
-            ".html",
-            ".json",
-            ".csv",
         }
 
-    def get_document_files(self, directory_path: str) -> List[Path]:
+    def get_document_files(self, directory_path: str) -> list[Path]:
         """Get all supported document files from the directory.
 
         Args:
@@ -71,7 +64,7 @@ class DocumentLoader:
         logger.info(f"Found {len(document_files)} document files in {directory_path}")
         return document_files
 
-    def load_specific_document(self, file_path: str) -> List[Document]:
+    def load_specific_document(self, file_path: Path) -> list[Document]:
         """Load a specific document file.
 
         Args:
@@ -81,16 +74,12 @@ class DocumentLoader:
             List of Document objects
         """
         try:
-            from llama_index.core import SimpleDirectoryReader
-
-            file_path_obj = Path(file_path)
-            if not file_path_obj.exists():
+            if not file_path.exists():
                 logger.error(f"File {file_path} does not exist")
                 return []
 
-            # Use SimpleDirectoryReader with specific file
             reader = SimpleDirectoryReader(
-                input_files=[str(file_path_obj)], recursive=False
+                input_files=[str(file_path)], recursive=False
             )
 
             documents = reader.load_data()
@@ -102,7 +91,7 @@ class DocumentLoader:
             return []
 
 
-def load_and_index_documents() -> bool:
+def load_and_index_documents(rag_service: RAGService) -> bool:
     """Main function to load and index documents.
 
     Returns:
@@ -111,53 +100,34 @@ def load_and_index_documents() -> bool:
     try:
         logger.info("Starting document loading and indexing process")
 
-        # Initialize document loader
         loader = DocumentLoader()
 
-        # Check repository health (don't require existing index for loading)
-        health = rag_repository.health_check(require_index=False)
+        health = rag_service.get_health_status(include_index=False)
         logger.info(f"Repository health: {health}")
 
         if not all(health.values()):
             logger.error("Repository health check failed")
             return False
 
-        # Get documents from data folder
         data_path = Path(settings.DATA_FOLDER)
         document_files = loader.get_document_files(str(data_path))
 
-        if not document_files:
-            logger.warning(f"No supported documents found in {data_path}")
-            # Try to load the specific PDF file mentioned
-            pdf_path = "/home/dev_it/dev/UltimateAdvisor/files/WFDF-Rules-of-Ultimate-2025-2028.pdf"
-            logger.info(f"Attempting to load specific PDF: {pdf_path}")
-            documents = loader.load_specific_document(pdf_path)
+        all_documents = []
+        for file_path in document_files:
+            logger.info(f"Loading document: {file_path}")
+            docs = loader.load_specific_document(file_path)
+            all_documents.extend(docs)
 
-            if not documents:
-                logger.error("No documents could be loaded")
-                return False
-        else:
-            # Load all documents from data folder
-            all_documents = []
-            for file_path in document_files:
-                logger.info(f"Loading document: {file_path}")
-                docs = loader.load_specific_document(str(file_path))
-                all_documents.extend(docs)
-
-            documents = all_documents
-
-        if not documents:
+        if not all_documents:
             logger.error("No documents were loaded")
             return False
 
-        # Index documents
-        logger.info(f"Indexing {len(documents)} documents into vector store")
-        success = rag_repository.index_documents(documents)
+        logger.info(f"Indexing {len(all_documents)} documents into vector store")
+        success = rag_service.index_documents(all_documents)
 
         if success:
             logger.info("Document indexing completed successfully")
-            # Log some statistics
-            doc_count = rag_repository.get_document_count()
+            doc_count = rag_service.get_document_count()
             logger.info(f"Total documents in vector store: {doc_count}")
         else:
             logger.error("Document indexing failed")
@@ -175,8 +145,9 @@ def main() -> None:
         logger.info("=" * 50)
         logger.info("Ultimate Advisor - Document Loading Script")
         logger.info("=" * 50)
+        rag_service: RAGService = get_rag_service()
 
-        success = load_and_index_documents()
+        success = load_and_index_documents(rag_service)
 
         if success:
             logger.info("✓ Document loading and indexing completed successfully")
